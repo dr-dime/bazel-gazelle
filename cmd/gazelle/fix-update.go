@@ -17,6 +17,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -361,7 +362,7 @@ func runFixUpdate(wd string, cmd command, args []string) (err error) {
 		}
 	})
 	if werr != nil && c.Strict {
-		return werr
+		return errors.New("walk.Walk failed as strict mode is on")
 	}
 
 	// Finish building the index for dependency resolution.
