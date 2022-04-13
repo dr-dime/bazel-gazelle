@@ -18,6 +18,7 @@ limitations under the License.
 package walk
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -108,7 +109,7 @@ type WalkFunc func(dir, rel string, c *config.Config, update bool, f *rule.File,
 // to the wf callback should be set.
 //
 // wf is a function that may be called in each directory.
-func Walk(c *config.Config, cexts []config.Configurer, dirs []string, mode Mode, wf WalkFunc) {
+func Walk(c *config.Config, cexts []config.Configurer, dirs []string, mode Mode, wf WalkFunc) error {
 	knownDirectives := make(map[string]bool)
 	for _, cext := range cexts {
 		for _, d := range cext.KnownDirectives() {
@@ -120,29 +121,28 @@ func Walk(c *config.Config, cexts []config.Configurer, dirs []string, mode Mode,
 
 	updateRels := buildUpdateRelMap(c.RepoRoot, dirs)
 
-	var visit func(*config.Config, string, string, bool)
-	visit = func(c *config.Config, dir, rel string, updateParent bool) {
-		haveError := false
-
+	var visit func(*config.Config, string, string, bool) error
+	visit = func(c *config.Config, dir, rel string, updateParent bool) (lastErr error) {
 		// TODO: OPT: ReadDir stats all the files, which is slow. We just care about
 		// names and modes, so we should use something like
 		// golang.org/x/tools/internal/fastwalk to speed this up.
 		files, err := ioutil.ReadDir(dir)
 		if err != nil {
 			log.Print(err)
+			lastErr = err
 			return
 		}
 
 		f, err := loadBuildFile(c, rel, dir, files)
 		if err != nil {
 			log.Print(err)
-			if c.Strict {
-				log.Fatal("Exit as strict mode is on")
-			}
-			haveError = true
+			lastErr = err
 		}
 
-		c = configure(cexts, knownDirectives, c, rel, f)
+		c, err = configure(cexts, knownDirectives, c, rel, f)
+		if err != nil {
+			lastErr = err
+		}
 		wc := getWalkConfig(c)
 
 		if wc.isExcluded(rel, ".") {
@@ -167,17 +167,20 @@ func Walk(c *config.Config, cexts []config.Configurer, dirs []string, mode Mode,
 		shouldUpdate := shouldUpdate(rel, mode, updateParent, updateRels)
 		for _, sub := range subdirs {
 			if subRel := path.Join(rel, sub); shouldVisit(subRel, mode, shouldUpdate, updateRels) {
-				visit(c, filepath.Join(dir, sub), subRel, shouldUpdate)
+				if err := visit(c, filepath.Join(dir, sub), subRel, shouldUpdate); err != nil {
+					lastErr = err
+				}
 			}
 		}
 
-		update := !haveError && !wc.ignore && shouldUpdate
+		update := lastErr == nil && !wc.ignore && shouldUpdate
 		if shouldCall(rel, mode, updateParent, updateRels) {
 			genFiles := findGenFiles(wc, f)
 			wf(dir, rel, c, update, f, subdirs, regularFiles, genFiles)
 		}
+		return
 	}
-	visit(c, c.RepoRoot, "", false)
+	return visit(c, c.RepoRoot, "", false)
 }
 
 // buildUpdateRelMap builds a table of prefixes, used to determine which
@@ -270,24 +273,24 @@ func loadBuildFile(c *config.Config, pkg, dir string, files []os.FileInfo) (*rul
 	return rule.LoadFile(path, pkg)
 }
 
-func configure(cexts []config.Configurer, knownDirectives map[string]bool, c *config.Config, rel string, f *rule.File) *config.Config {
+func configure(cexts []config.Configurer, knownDirectives map[string]bool, c *config.Config, rel string, f *rule.File) (*config.Config, error) {
 	if rel != "" {
 		c = c.Clone()
 	}
+	var lastErr error
 	if f != nil {
 		for _, d := range f.Directives {
 			if !knownDirectives[d.Key] {
-				log.Printf("%s: unknown directive: gazelle:%s", f.Path, d.Key)
-				if c.Strict {
-					log.Fatal("Exit as strict mode is on")
-				}
+				err := fmt.Errorf("%s: unknown directive: gazelle:%s", f.Path, d.Key)
+				log.Print(err)
+				lastErr = err
 			}
 		}
 	}
 	for _, cext := range cexts {
 		cext.Configure(c, rel, f)
 	}
-	return c
+	return c, lastErr
 }
 
 func findGenFiles(wc *walkConfig, f *rule.File) []string {

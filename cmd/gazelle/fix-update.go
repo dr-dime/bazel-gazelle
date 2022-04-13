@@ -274,7 +274,7 @@ func runFixUpdate(wd string, cmd command, args []string) (err error) {
 	// Visit all directories in the repository.
 	var visits []visitRecord
 	uc := getUpdateConfig(c)
-	walk.Walk(c, cexts, uc.dirs, uc.walkMode, func(dir, rel string, c *config.Config, update bool, f *rule.File, subdirs, regularFiles, genFiles []string) {
+	werr := walk.Walk(c, cexts, uc.dirs, uc.walkMode, func(dir, rel string, c *config.Config, update bool, f *rule.File, subdirs, regularFiles, genFiles []string) {
 		// If this file is ignored or if Gazelle was not asked to update this
 		// directory, just index the build file and move on.
 		if !update {
@@ -360,6 +360,9 @@ func runFixUpdate(wd string, cmd command, args []string) (err error) {
 			}
 		}
 	})
+	if werr != nil && c.Strict {
+		return werr
+	}
 
 	// Finish building the index for dependency resolution.
 	ruleIndex.Finish()
